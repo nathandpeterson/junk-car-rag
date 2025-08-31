@@ -1,0 +1,19 @@
+[project]
+name = "junk-car"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.13.5",
+    "logfire>=4.3.6",
+    "numpy>=2.3.2",
+    "openai>=1.102.0",
+    "pillow>=11.3.0",
+    "pymupdf>=1.26.4",
+    "pytesseract>=0.3.13",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.5",
+    "selenium>=4.35.0",
+    "sentence-transformers>=5.1.0",
+]
