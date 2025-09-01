@@ -12,8 +12,13 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 import sys
+import logfire
 
 load_dotenv()
+
+if os.getenv('LOGFIRE_TOKEN'):
+    logfire.configure(send_to_logfire='if-token-present')
+    logfire.instrument_openai()
 
 @dataclass
 class RetrievedChunk:
@@ -37,31 +42,28 @@ class LemonsVirtualInspector:
                  embedding_model: str = "all-MiniLM-L6-v2",
                  model_name: str = "llama3.2:latest",
                  provider: str = "ollama"):
-        
-        print("🏁 Initializing 24 Hours of Lemons Virtual Inspector...")
-        
-        # Load embedding model
-        print(f"Loading embedding model: {embedding_model}")
-        self.embedding_model = SentenceTransformer(embedding_model)
-        
-        # Setup LLM client based on provider
-        self.model_name = model_name
-        self.provider = provider
-        self.client = self._setup_client(provider, model_name)
-        
-        if self.client:
-            self.use_llm = True
-            print(f"✅ LLM enabled: {provider}/{model_name}")
-        else:
-            self.use_llm = False
-            print("⚠️  LLM disabled. Retrieval-only mode.")
-        
-        # Load chunks and embeddings
-        self.chunks = self._load_chunks()
-        self.embeddings = self._load_embeddings()
-        
-        print(f"✅ Loaded {len(self.chunks)} rule chunks")
-        print("🏁 Virtual Inspector ready!\n")
+        with logfire.span('init_inspector'):            
+            # Load embedding model
+            logfire.info(f"Loading embedding model: {embedding_model}")
+            self.embedding_model = SentenceTransformer(embedding_model)
+            
+            # Setup LLM client based on provider
+            self.model_name = model_name
+            self.provider = provider
+            self.client = self._setup_client(provider, model_name)
+            
+            if self.client:
+                self.use_llm = True
+                logfire.info(f"LLM enabled: {provider}/{model_name}")
+            else:
+                self.use_llm = False
+                logfire.info("LLM disabled. Retrieval-only mode.")
+            
+            # Load chunks and embeddings
+            self.chunks = self._load_chunks()
+            self.embeddings = self._load_embeddings()
+            
+            logfire.info(f"Loaded {len(self.chunks)} rule chunks")
     
     def _setup_client(self, provider: str, model_name: str) -> Optional[OpenAI]:
         """Setup the appropriate client based on provider"""
@@ -109,125 +111,128 @@ class LemonsVirtualInspector:
         """Retrieve most relevant rules for a query"""
         
         print(f"🔍 Searching for: '{query}'")
-        
-        # Semantic search
-        semantic_scores = self._semantic_search(query)
-        
-        # Keyword search  
-        keyword_scores = self._keyword_search(query)
-        
-        # Rule number search
-        rule_number_boost = self._rule_number_search(query)
-        
-        # Combine scores
-        retrieved_chunks = []
-        for i, chunk in enumerate(self.chunks):
-            semantic_score = semantic_scores[i]
-            keyword_score = keyword_scores[i]
-            rule_boost = rule_number_boost.get(chunk['rule_number'], 0)
+        with logfire.span('starting retrieval'):
+            # Semantic search
+            semantic_scores = self._semantic_search(query)
             
-            combined_score = (
-                semantic_weight * semantic_score + 
-                keyword_weight * keyword_score +
-                rule_boost
-            )
+            # Keyword search  
+            keyword_scores = self._keyword_search(query)
             
-            retrieved_chunks.append(RetrievedChunk(
-                chunk_id=chunk['chunk_id'],
-                rule_number=chunk['rule_number'],
-                title=chunk['title'],
-                content=chunk['content'],
-                full_text=chunk['full_text'],
-                section_name=chunk['section_name'],
-                keywords=chunk['keywords'],
-                cross_references=chunk['cross_references'],
-                semantic_score=semantic_score,
-                keyword_score=keyword_score,
-                combined_score=combined_score
-            ))
-        
-        # Sort by combined score and return top k
-        retrieved_chunks.sort(key=lambda x: x.combined_score, reverse=True)
-        top_chunks = retrieved_chunks[:top_k]
-        
-        print(f"📋 Found {len(top_chunks)} relevant rules:")
-        for i, chunk in enumerate(top_chunks):
-            print(f"  {i+1}. Rule {chunk.rule_number} (score: {chunk.combined_score:.3f})")
-            print(f"     {chunk.title}")
-        
-        return top_chunks
+            # Rule number search
+            rule_number_boost = self._rule_number_search(query)
+            
+            # Combine scores
+            retrieved_chunks = []
+            for i, chunk in enumerate(self.chunks):
+                semantic_score = semantic_scores[i]
+                keyword_score = keyword_scores[i]
+                rule_boost = rule_number_boost.get(chunk['rule_number'], 0)
+                
+                combined_score = (
+                    semantic_weight * semantic_score + 
+                    keyword_weight * keyword_score +
+                    rule_boost
+                )
+                
+                retrieved_chunks.append(RetrievedChunk(
+                    chunk_id=chunk['chunk_id'],
+                    rule_number=chunk['rule_number'],
+                    title=chunk['title'],
+                    content=chunk['content'],
+                    full_text=chunk['full_text'],
+                    section_name=chunk['section_name'],
+                    keywords=chunk['keywords'],
+                    cross_references=chunk['cross_references'],
+                    semantic_score=semantic_score,
+                    keyword_score=keyword_score,
+                    combined_score=combined_score
+                ))
+            
+            # Sort by combined score and return top k
+            retrieved_chunks.sort(key=lambda x: x.combined_score, reverse=True)
+            top_chunks = retrieved_chunks[:top_k]
+            
+            print(f"📋 Found {len(top_chunks)} relevant rules:")
+            for i, chunk in enumerate(top_chunks):
+                print(f"  {i+1}. Rule {chunk.rule_number} (score: {chunk.combined_score:.3f})")
+                print(f"     {chunk.title}")
+            
+            return top_chunks
     
     def _semantic_search(self, query: str) -> np.ndarray:
         """Perform semantic similarity search"""
-        query_embedding = self.embedding_model.encode([query])[0]
-        
-        similarities = []
-        for chunk_embedding in self.embeddings:
-            similarity = np.dot(query_embedding, chunk_embedding) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(chunk_embedding)
-            )
-            similarities.append(similarity)
-        
-        return np.array(similarities)
+        with logfire.span('semantic_search'):
+            query_embedding = self.embedding_model.encode([query])[0]
+            
+            similarities = []
+            for chunk_embedding in self.embeddings:
+                similarity = np.dot(query_embedding, chunk_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(chunk_embedding)
+                )
+                similarities.append(similarity)
+            
+            return np.array(similarities)
     
     def _keyword_search(self, query: str) -> np.ndarray:
         """Perform keyword-based search"""
-        query_lower = query.lower()
-        query_words = set(re.findall(r'\b\w+\b', query_lower))
-        
-        scores = []
-        for chunk in self.chunks:
-            chunk_text = (chunk['content'] + ' ' + chunk['title']).lower()
-            chunk_words = set(re.findall(r'\b\w+\b', chunk_text))
+        with logfire.span('keyword_search'):
+            query_lower = query.lower()
+            query_words = set(re.findall(r'\b\w+\b', query_lower))
             
-            # Calculate word overlap
-            common_words = query_words.intersection(chunk_words)
-            if len(query_words) > 0:
-                keyword_score = len(common_words) / len(query_words)
-            else:
-                keyword_score = 0
+            scores = []
+            for chunk in self.chunks:
+                chunk_text = (chunk['content'] + ' ' + chunk['title']).lower()
+                chunk_words = set(re.findall(r'\b\w+\b', chunk_text))
+                
+                # Calculate word overlap
+                common_words = query_words.intersection(chunk_words)
+                if len(query_words) > 0:
+                    keyword_score = len(common_words) / len(query_words)
+                else:
+                    keyword_score = 0
+                
+                # Boost for exact keyword matches
+                for keyword in chunk.get('keywords', []):
+                    if keyword.lower() in query_lower:
+                        keyword_score += 0.2
+                
+                scores.append(keyword_score)
             
-            # Boost for exact keyword matches
-            for keyword in chunk.get('keywords', []):
-                if keyword.lower() in query_lower:
-                    keyword_score += 0.2
-            
-            scores.append(keyword_score)
-        
-        return np.array(scores)
+            return np.array(scores)
     
     def _rule_number_search(self, query: str) -> Dict[str, float]:
         """Boost scores for explicit rule number mentions"""
-        rule_pattern = re.compile(r'\b(\d+(?:\.\d+)*)\b')
-        rule_numbers = rule_pattern.findall(query)
-        
-        boost_scores = {}
-        for rule_num in rule_numbers:
-            boost_scores[rule_num] = 1.0
-        
-        return boost_scores
+        with logfire.span('rule_number_search'):
+            rule_pattern = re.compile(r'\b(\d+(?:\.\d+)*)\b')
+            rule_numbers = rule_pattern.findall(query)
+            
+            boost_scores = {}
+            for rule_num in rule_numbers:
+                boost_scores[rule_num] = 1.0
+            
+            return boost_scores
     
     def generate_answer(self, 
                        query: str, 
                        retrieved_chunks: List[RetrievedChunk],
                        include_cross_refs: bool = True) -> Dict:
         """Generate answer using LLM with retrieved context"""
-        
-        if not self.use_llm:
-            return self._format_retrieval_only_response(query, retrieved_chunks)
-        
-        # Build context
-        context = self._build_context(retrieved_chunks, include_cross_refs)
-        
-        # Create messages
-        messages = [
-            {
-                "role": "system", 
-                "content": "You are a knowledgeable 24 Hours of Lemons racing inspector. Provide accurate, helpful answers about racing rules with proper citations."
-            },
-            {
-                "role": "user", 
-                "content": f"""Answer the following question about 24 Hours of Lemons racing rules. 
+        with logfire.span('generating answer'):
+            if not self.use_llm:
+                return self._format_retrieval_only_response(query, retrieved_chunks)
+            
+            # Build context
+            context = self._build_context(retrieved_chunks, include_cross_refs)
+            
+            # Create messages
+            messages = [
+                {
+                    "role": "system", 
+                    "content": "You are a knowledgeable 24 Hours of Lemons racing inspector. Provide accurate, helpful answers about racing rules with proper citations."
+                },
+                {
+                    "role": "user", 
+                    "content": f"""Answer the following question about 24 Hours of Lemons racing rules. 
 
 Use ONLY the provided rule context to answer. Always cite specific rule numbers in your response.
 Be precise and helpful. If rules conflict or are unclear, mention that.
@@ -238,8 +243,8 @@ Rule Context:
 {context}
 
 Provide a clear, concise answer with proper rule citations:"""
-            }
-        ]
+                }
+            ]
         
         try:
             response = self.client.chat.completions.create(
