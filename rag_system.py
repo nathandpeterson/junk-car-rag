@@ -1,19 +1,19 @@
+#!/usr/bin/env python3
+
+import argparse
 import json
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import re
 from sentence_transformers import SentenceTransformer
-import openai
+from openai import OpenAI
 from datetime import datetime
 import os
 from dotenv import load_dotenv
-import logfire
+import sys
 
 load_dotenv()
-
-# logfire.configure()
-# logfire.instrument_openai()  # instrument all OpenAI clients globally
 
 @dataclass
 class RetrievedChunk:
@@ -26,8 +26,6 @@ class RetrievedChunk:
     section_name: str
     keywords: List[str]
     cross_references: List[str]
-    
-    # Retrieval scores
     semantic_score: float
     keyword_score: float
     combined_score: float
@@ -36,9 +34,9 @@ class LemonsVirtualInspector:
     """Complete RAG system for 24 Hours of Lemons rules"""
     
     def __init__(self, 
-                 openai_api_key: Optional[str] = None,
                  embedding_model: str = "all-MiniLM-L6-v2",
-                 llm_model: str = "gpt-3.5-turbo"):
+                 model_name: str = "llama3.2:latest",
+                 provider: str = "ollama"):
         
         print("🏁 Initializing 24 Hours of Lemons Virtual Inspector...")
         
@@ -46,15 +44,17 @@ class LemonsVirtualInspector:
         print(f"Loading embedding model: {embedding_model}")
         self.embedding_model = SentenceTransformer(embedding_model)
         
-        # Setup OpenAI (optional - can work without it for retrieval only)
-        self.llm_model = llm_model
-        if openai_api_key:
-            openai.api_key = openai_api_key
+        # Setup LLM client based on provider
+        self.model_name = model_name
+        self.provider = provider
+        self.client = self._setup_client(provider, model_name)
+        
+        if self.client:
             self.use_llm = True
-            print(f"✅ LLM enabled: {llm_model}")
+            print(f"✅ LLM enabled: {provider}/{model_name}")
         else:
             self.use_llm = False
-            print("⚠️  LLM disabled (no API key). Retrieval-only mode.")
+            print("⚠️  LLM disabled. Retrieval-only mode.")
         
         # Load chunks and embeddings
         self.chunks = self._load_chunks()
@@ -63,20 +63,43 @@ class LemonsVirtualInspector:
         print(f"✅ Loaded {len(self.chunks)} rule chunks")
         print("🏁 Virtual Inspector ready!\n")
     
+    def _setup_client(self, provider: str, model_name: str) -> Optional[OpenAI]:
+        """Setup the appropriate client based on provider"""
+        try:
+            if provider.lower() == "ollama":
+                return OpenAI(
+                    base_url="http://localhost:11434/v1",
+                    api_key="ollama"
+                )
+            elif provider.lower() == "openai":
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    print("❌ OPENAI_API_KEY not found in environment")
+                    return None
+                return OpenAI(api_key=api_key)
+            else:
+                print(f"❌ Unsupported provider: {provider}")
+                return None
+        except Exception as e:
+            print(f"❌ Failed to setup {provider} client: {e}")
+            return None
+    
     def _load_chunks(self, filename: str = 'rule_chunks.json') -> List[Dict]:
         """Load rule chunks"""
         try:
             with open(filename, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Chunks file {filename} not found. Run rule_chunker.py first!")
+            print(f"❌ Chunks file {filename} not found. Run rule_chunker.py first!")
+            sys.exit(1)
     
     def _load_embeddings(self, filename: str = 'rule_embeddings.npy') -> np.ndarray:
         """Load precomputed embeddings"""
         try:
             return np.load(filename)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Embeddings file {filename} not found. Run rule_chunker.py first!")
+            print(f"❌ Embeddings file {filename} not found. Run rule_chunker.py first!")
+            sys.exit(1)
     
     def retrieve_relevant_rules(self, 
                                query: str, 
@@ -87,23 +110,22 @@ class LemonsVirtualInspector:
         
         print(f"🔍 Searching for: '{query}'")
         
-        # 1. Semantic search
+        # Semantic search
         semantic_scores = self._semantic_search(query)
         
-        # 2. Keyword search
+        # Keyword search  
         keyword_scores = self._keyword_search(query)
         
-        # 3. Rule number search (if query contains rule numbers)
+        # Rule number search
         rule_number_boost = self._rule_number_search(query)
         
-        # 4. Combine scores
+        # Combine scores
         retrieved_chunks = []
         for i, chunk in enumerate(self.chunks):
             semantic_score = semantic_scores[i]
             keyword_score = keyword_scores[i]
             rule_boost = rule_number_boost.get(chunk['rule_number'], 0)
             
-            # Combined scoring with boost for exact rule matches
             combined_score = (
                 semantic_weight * semantic_score + 
                 keyword_weight * keyword_score +
@@ -139,7 +161,6 @@ class LemonsVirtualInspector:
         """Perform semantic similarity search"""
         query_embedding = self.embedding_model.encode([query])[0]
         
-        # Calculate cosine similarities
         similarities = []
         for chunk_embedding in self.embeddings:
             similarity = np.dot(query_embedding, chunk_embedding) / (
@@ -166,7 +187,7 @@ class LemonsVirtualInspector:
             else:
                 keyword_score = 0
             
-            # Boost for exact keyword matches in chunk keywords
+            # Boost for exact keyword matches
             for keyword in chunk.get('keywords', []):
                 if keyword.lower() in query_lower:
                     keyword_score += 0.2
@@ -182,7 +203,7 @@ class LemonsVirtualInspector:
         
         boost_scores = {}
         for rule_num in rule_numbers:
-            boost_scores[rule_num] = 1.0  # Strong boost for exact rule matches
+            boost_scores[rule_num] = 1.0
         
         return boost_scores
     
@@ -193,30 +214,42 @@ class LemonsVirtualInspector:
         """Generate answer using LLM with retrieved context"""
         
         if not self.use_llm:
-            # Return retrieval-only response
             return self._format_retrieval_only_response(query, retrieved_chunks)
         
-        # Build context from retrieved chunks
+        # Build context
         context = self._build_context(retrieved_chunks, include_cross_refs)
         
-        # Create prompt for LLM
-        prompt = self._create_prompt(query, context)
+        # Create messages
+        messages = [
+            {
+                "role": "system", 
+                "content": "You are a knowledgeable 24 Hours of Lemons racing inspector. Provide accurate, helpful answers about racing rules with proper citations."
+            },
+            {
+                "role": "user", 
+                "content": f"""Answer the following question about 24 Hours of Lemons racing rules. 
+
+Use ONLY the provided rule context to answer. Always cite specific rule numbers in your response.
+Be precise and helpful. If rules conflict or are unclear, mention that.
+
+Question: {query}
+
+Rule Context:
+{context}
+
+Provide a clear, concise answer with proper rule citations:"""
+            }
+        ]
         
         try:
-            # Call OpenAI API
-            response = openai.responses.create(
-                model=self.llm_model,
-                input=[
-                    {
-                        "role": "system", 
-                        "content": "You are a knowledgeable 24 Hours of Lemons racing inspector. Provide accurate, helpful answers about racing rules with proper citations."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,  # Low temperature for factual accuracy
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=500
             )
             
-            answer = response.output_text.strip()
+            answer = response.choices[0].message.content.strip()
             
             return {
                 "query": query,
@@ -228,14 +261,29 @@ class LemonsVirtualInspector:
                         "score": chunk.combined_score
                     } for chunk in retrieved_chunks
                 ],
-                "context_used": context,
+                "model_used": f"{self.provider}/{self.model_name}",
                 "timestamp": datetime.now().isoformat(),
-                "model_used": self.llm_model
+                "success": True
             }
             
         except Exception as e:
             print(f"❌ LLM generation failed: {e}")
             return self._format_retrieval_only_response(query, retrieved_chunks)
+    
+    def _build_context(self, chunks: List[RetrievedChunk], include_cross_refs: bool) -> str:
+        """Build context string from retrieved chunks"""
+        context_parts = ["Here are the relevant racing rules:\n"]
+        
+        for chunk in chunks:
+            context_parts.append(f"Rule {chunk.rule_number}: {chunk.title}")
+            context_parts.append(chunk.content)
+            
+            if include_cross_refs and chunk.cross_references:
+                context_parts.append(f"Cross-references: {', '.join(chunk.cross_references)}")
+            
+            context_parts.append("")
+        
+        return "\n".join(context_parts)
     
     def _format_retrieval_only_response(self, query: str, retrieved_chunks: List[RetrievedChunk]) -> Dict:
         """Format response when LLM is not available"""
@@ -259,38 +307,10 @@ class LemonsVirtualInspector:
                     "score": chunk.combined_score
                 } for chunk in retrieved_chunks
             ],
+            "model_used": "retrieval_only",
             "timestamp": datetime.now().isoformat(),
-            "model_used": "retrieval_only"
+            "success": True
         }
-    
-    def _build_context(self, chunks: List[RetrievedChunk], include_cross_refs: bool) -> str:
-        """Build context string from retrieved chunks"""
-        context_parts = ["Here are the relevant racing rules:\n"]
-        
-        for chunk in chunks:
-            context_parts.append(f"Rule {chunk.rule_number}: {chunk.title}")
-            context_parts.append(chunk.content)
-            
-            if include_cross_refs and chunk.cross_references:
-                context_parts.append(f"Cross-references: {', '.join(chunk.cross_references)}")
-            
-            context_parts.append("")  # Blank line between rules
-        
-        return "\n".join(context_parts)
-    
-    def _create_prompt(self, query: str, context: str) -> str:
-        """Create prompt for LLM"""
-        return f"""Answer the following question about 24 Hours of Lemons racing rules. 
-
-Use ONLY the provided rule context to answer. Always cite specific rule numbers in your response.
-Be precise and helpful. If rules conflict or are unclear, mention that.
-
-Question: {query}
-
-Rule Context:
-{context}
-
-Provide a clear, concise answer with proper rule citations:"""
     
     def ask(self, query: str, top_k: int = 5) -> Dict:
         """Main interface: ask a question and get an answer"""
@@ -312,58 +332,147 @@ Provide a clear, concise answer with proper rule citations:"""
         for rule in response['retrieved_rules']:
             print(f"  • Rule {rule['rule_number']}: {rule['title']}")
         
+        print(f"\n🤖 Model used: {response['model_used']}")
+        
         return response
-    
-    def batch_test(self, test_queries: List[str]) -> List[Dict]:
-        """Test multiple queries for evaluation"""
-        results = []
-        
-        print(f"🧪 Running batch test on {len(test_queries)} queries...\n")
-        
-        for query in test_queries:
-            result = self.ask(query)
-            results.append(result)
-        
-        return results
 
-# Example usage and testing
-if __name__ == "__main__":
-    # Initialize the system
-    # Note: Set OPENAI_API_KEY environment variable for LLM responses
-    # or pass api_key parameter to use GPT models
+def create_parser():
+    """Create command-line argument parser"""
+    parser = argparse.ArgumentParser(
+        description="24 Hours of Lemons Virtual Inspector - RAG-powered rule assistant",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Ask a question using Ollama (default)
+  python rag_system.py -q "What's the budget limit?"
+  
+  # Use specific Ollama model  
+  python rag_system.py -m llama3.1:latest -q "Can I upgrade my transmission?"
+  
+  # Use OpenAI GPT-4
+  python rag_system.py -p openai -m gpt-4 -q "What are roll cage requirements?"
+  
+  # Retrieval only (no LLM)
+  python rag_system.py --retrieval-only -q "Safety equipment rules"
+  
+  # Interactive mode
+  python rag_system.py --interactive
+        """
+    )
+    
+    # Model selection
+    parser.add_argument('-m', '--model', 
+                       default='llama3.2:latest',
+                       help='Model name (default: llama3.2:latest)')
+    
+    parser.add_argument('-p', '--provider', 
+                       choices=['ollama', 'openai'],
+                       default='ollama',
+                       help='Model provider (default: ollama)')
+    
+    # Query options
+    parser.add_argument('-q', '--query', 
+                       help='Question to ask the Virtual Inspector')
+    
+    parser.add_argument('--interactive', 
+                       action='store_true',
+                       help='Start interactive chat mode')
+    
+    # Retrieval options
+    parser.add_argument('-k', '--top-k', 
+                       type=int, 
+                       default=5,
+                       help='Number of relevant rules to retrieve (default: 5)')
+    
+    parser.add_argument('--retrieval-only', 
+                       action='store_true',
+                       help='Skip LLM generation, show retrieved rules only')
+    
+    # Output options
+    parser.add_argument('--json', 
+                       action='store_true',
+                       help='Output response as JSON')
+    
+    parser.add_argument('--verbose', '-v',
+                       action='store_true',
+                       help='Verbose output with retrieval scores')
+    
+    return parser
+
+def interactive_mode(inspector: LemonsVirtualInspector):
+    """Run interactive chat mode"""
+    print("\n🏁 Interactive Virtual Inspector Mode")
+    print("Ask questions about 24 Hours of Lemons rules!")
+    print("Type 'quit', 'exit', or 'bye' to exit.\n")
+    
+    while True:
+        try:
+            query = input("❓ Your question: ").strip()
+            
+            if query.lower() in ['quit', 'exit', 'bye', 'q']:
+                print("👋 Thanks for using the Virtual Inspector!")
+                break
+            
+            if not query:
+                continue
+            
+            response = inspector.ask(query)
+            print()  # Extra space for readability
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 Thanks for using the Virtual Inspector!")
+            break
+        except EOFError:
+            break
+
+def main():
+    """Main CLI entry point"""
+    parser = create_parser()
+    args = parser.parse_args()
+    
+    # Show help if no arguments
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return
     
     try:
-        print("Trying OPENAI key --- ")
-        print(os.getenv("OPENAI_API_KEY"))
+        # Initialize inspector
         inspector = LemonsVirtualInspector(
-            openai_api_key=os.getenv("OPENAI_API_KEY"),  # Uncomment if you have OpenAI API key
+            model_name=args.model,
+            provider=args.provider
         )
         
-        # Test queries from the original requirements
-        test_queries = [
-            "Can I upgrade my transmission?",
-            "What's the budget limit for my car?",
-            "Are shifters exempt from the budget?",
-            "What are the roll cage requirements?",
-            "Can I use the sale of old parts to offset new part costs?",
-            "What safety equipment is required?",
-            "What happens if I fail tech inspection?",
-        ]
+        # Override LLM usage if retrieval-only requested
+        if args.retrieval_only:
+            inspector.use_llm = False
+            print("🔍 Running in retrieval-only mode")
         
-        # Run interactive demo
-        print("🏁 24 Hours of Lemons Virtual Inspector Demo")
-        print("Ask questions about racing rules!\n")
+        # Interactive mode
+        if args.interactive:
+            interactive_mode(inspector)
+            return
         
-        # Test batch queries
-        results = inspector.batch_test(test_queries)
+        # Single query mode
+        if args.query:
+            response = inspector.ask(args.query, top_k=args.top_k)
+            
+            # JSON output
+            if args.json:
+                print(json.dumps(response, indent=2))
+            
+            return
         
-        print(f"\n✅ Demo complete! The Virtual Inspector answered {len(results)} questions.")
-        print("\nTo use interactively, call: inspector.ask('your question here')")
+        # No query provided
+        print("❌ Please provide a query with -q or use --interactive mode")
+        parser.print_help()
         
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        print("Please run rule_chunker.py first to generate the required data files!")
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
     except Exception as e:
-        print(f"❌ Error initializing Virtual Inspector: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+
+if __name__ == "__main__":
+    main()

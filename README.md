@@ -6,6 +6,7 @@ This is a rag-based system that scrapes information from ["24 hours of Lemons"](
 
 - `uv`
 - `chromedriver`
+- `ollama` (not required if you use retrieval-only or openai)
 
 ## Instructions
 
@@ -22,6 +23,11 @@ uv sync
 
 If you want to run with OpenAI, add a `.env` file and add `OPENAI_API_KEY`.
 
+If you want to run with Ollama, download the model from [here](https://ollama.com/library/llama3.2).
+
+Once you've dowloaded ollama, get the latest model, e.g.:
+`ollama run llama3.2`
+
 ## Scripts
 
 1. To scrape latest rules, use `scraper.py`, which will create a file called `lemons_rules.json`
@@ -29,8 +35,25 @@ If you want to run with OpenAI, add a `.env` file and add `OPENAI_API_KEY`.
 3. To create embeddings, use `rule_chunker.py`, which will generate `rule_embeddings.npy`
 4. To test workflow, run `rag_system.py`. This runs a set of test queries.
 
+## CLI
+
+# Simple question with default Ollama model
+
+`python rag_system.py -q "What's the budget limit?"`
+
+# Use a specific Ollama model
+
+`python rag_system.py -m llama3.2 -q "Can I upgrade my transmission?"`
+
+# Use OpenAI GPT-4 (requires OPENAI_API_KEY)
+
+`python rag_system.py -p openai -m gpt-4 -q "What are roll cage requirements?"`
+
+# Interactive chat mode
+
+`python rag_system.py --interactive`
+
 ## Coming soon:
 
-- testing with ollama locally
 - exposing `rag_system.py` as an endpoint
 - making it multimodal so that it can also ingest and display images
