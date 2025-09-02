@@ -30,7 +30,7 @@ Once you've dowloaded ollama, get the latest model, e.g.:
 
 ## Scripts
 
-1. To scrape latest rules, use `scraper.py`, which will create a file called `lemons_rules.json`
+1. To scrape latest rules, use `extractors/scraper.py https://24hoursoflemons.com/prices-rules/`, which will create a file called `lemons_rules.json` in the `data/` folder
 2. To parse word chunks, use `web_rule_parser.py`, which will generate `parsed_rules.json`
 3. To create embeddings, use `rule_chunker.py`, which will generate `rule_embeddings.npy`
 4. To test workflow, run `rag_system.py`. This runs a set of test queries.

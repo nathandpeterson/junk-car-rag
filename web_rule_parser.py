@@ -42,7 +42,7 @@ class WebRuleParser:
             re.compile(r'(?:described in|see|refer to|as per)\s+(?:Rule|rule)s?\s+(\d+(?:\.\d+)*)', re.IGNORECASE),
         ]
     
-    def parse_extracted_rules(self, json_file: str = 'lemons_rules.json') -> Dict[str, ParsedRule]:
+    def parse_extracted_rules(self, json_file: str = 'data/lemons_rules.json') -> Dict[str, ParsedRule]:
         """Parse the extracted accordion rules into individual rules"""
         print(f"Parsing rules from {json_file}...")
         
