@@ -5,7 +5,7 @@ import argparse
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 import json
-import time
+import os
 
 @dataclass
 class AccordionRuleSection:
@@ -104,6 +104,7 @@ class AccordionRuleScraper:
     def save_rules(self, rules: Dict[str, AccordionRuleSection], filename: str = "data/lemons_rules.json"):
         """Save extracted rules to JSON"""
         rules_data = {}
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         
         for rule_number, rule in rules.items():
             rules_data[rule_number] = {
